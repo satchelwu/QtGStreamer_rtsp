@@ -57,6 +57,7 @@ Camera::Camera(QObject *parent) : QObject(parent)
 
     QGlib::connect(bus, "message", this, &Camera::OnBusMessage);
     m_pipeline->setState(QGst::StatePlaying);
+    connect(&m_watchStatusTimer, &QTimer::timeout, this, &Camera::OnWatchStatus);
     m_watchStatusTimer.start();
 
 }
@@ -79,17 +80,32 @@ Camera::~Camera()
 
 void Camera::SetRtspAddress(const QString& strRtspAddress)
 {
-    m_rtspsrc->setState(QGst::StateNull);
-    m_rtspsrc->setProperty("location", strRtspAddress);
-
-    m_rtspsrc->syncStateWithParent();
-//    m_pipeline->setState(QGst::StatePlaying);
-    //    m_rtspsrc->setState(QGst::StatePlaying);
+//    for(int i = 0; i < 2; ++i)
+    {
+        m_rtspsrc->setState(QGst::StateNull);
+        m_rtspsrc->setProperty("location", strRtspAddress);
+        m_rtspsrc->syncStateWithParent();
+        m_lastRtspAddress = strRtspAddress;
+    }
 }
 
 QGst::Quick::VideoSurface* Camera::VideoSurface()
 {
     return m_pVideoSurface;
+}
+
+void Camera::Replay()
+{
+    m_rtspsrc->setState(QGst::StateNull);
+    m_rtspsrc->setProperty(GStreamer::rtspsrc::LOCATION, m_lastRtspAddress);
+    m_rtspsrc->syncStateWithParent();
+}
+
+void Camera::Reset()
+{
+    m_rtspsrc->setState(QGst::StateNull);
+    m_rtspsrc->setProperty(GStreamer::rtspsrc::LOCATION, "rtsp://localhost");
+    m_rtspsrc->syncStateWithParent();
 }
 
 
@@ -99,7 +115,8 @@ bool Camera::OnRtspsrcSelectStream(int num, const QGst::CapsPtr &caps)
     {
         return false;
     }
-    qDebug() << caps->toString();
+    qDebug() << "select stream";
+//    qDebug() << caps->toString();
     if(caps->size())
     {
         QGst::StructurePtr s = caps->internalStructure(0);
@@ -113,11 +130,13 @@ bool Camera::OnRtspsrcSelectStream(int num, const QGst::CapsPtr &caps)
             {
                 if(!m_rtphdepay.isNull())
                 {
+                    m_rtphdepay->setState(QGst::StateNull);
                     m_pipeline->remove(m_rtphdepay);
                     m_rtphdepay.clear();
                 }
                 if(!m_parse.isNull())
                 {
+                    m_parse->setState(QGst::StateNull);
                     m_pipeline->remove(m_parse);
                     m_parse.clear();
                 }
@@ -222,7 +241,7 @@ void Camera::OnRtspsrcPadAdded(const QGst::PadPtr& pad)
 
 void Camera::onRtspsrcPadRemoved(const QGst::PadPtr &pad)
 {
-    qDebug() << "linked: " <<  pad->isLinked();
+//    qDebug() << "linked: " <<  pad->isLinked();
     if(pad.isNull())
     {
         return;
@@ -284,7 +303,7 @@ void Camera::OnWatchStatus()
     }
     if(nTimespan > 0)
     {
-        qDebug() << "time spane: " <<  nTimespan;
+//        qDebug() << "time spane: " <<  nTimespan;
     }
 }
 
@@ -307,6 +326,9 @@ void Camera::OnBusMessage(const QGst::MessagePtr &message)
 {
     //    QList<params propertyList = message->source()->listProperties();
     //    qDebug() << propertyList;
+//    qDebug() << message->typeName();
+//    qDebug() << message->internalStructure()->toString();
+    return;
     switch (message->type()) {
     case QGst::MessageEos: //End of stream. We reached the end of the file.
         //        stop();
@@ -315,6 +337,10 @@ void Camera::OnBusMessage(const QGst::MessagePtr &message)
             bool b = true;
         }
         break;
+//    case QGst::MessageElement:
+
+
+//        break;
     case QGst::MessageError: //Some error occurred.
     {
 
@@ -349,14 +375,22 @@ void Camera::OnBusMessage(const QGst::MessagePtr &message)
 
     }
         break;
+    case QGst::MessageStreamStatus:
+        {
+        QGst::StreamStatusMessagePtr statusPtr = message.staticCast<QGst::StreamStatusMessage>();
+        qDebug() << statusPtr->internalStructure()->toString();
+
+    }
+         break;
     default:
+        qDebug() << "message type: " <<  message->typeName();
         break;
     }
 }
 
 GstPadProbeReturn Camera::QueueSinkPadProbeFunc(GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
 {
-    qDebug() << "probe func";
+//    qDebug() << "probe func";
     Camera* camera = (Camera*)user_data;
     if(camera)
     {

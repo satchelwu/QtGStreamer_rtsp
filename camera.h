@@ -30,6 +30,8 @@ public:
     ~Camera();
     void SetRtspAddress(const QString& strRtspAddress);
     Q_INVOKABLE QGst::Quick::VideoSurface* VideoSurface();
+    Q_INVOKABLE void Replay();
+    Q_INVOKABLE void Reset();
 
 private Q_SLOTS:
     bool OnRtspsrcSelectStream(int num, const QGst::CapsPtr& caps);
@@ -65,6 +67,7 @@ private:
     QTime m_lastBufferTime;
     QTimer m_watchStatusTimer;
     QGst::Quick::VideoSurface* m_pVideoSurface{nullptr};
+    QString m_lastRtspAddress;
 };
 
 #endif // CAMERA_H

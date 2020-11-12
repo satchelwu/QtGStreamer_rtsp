@@ -9,15 +9,28 @@ Item {
     width: 640
     height: 480
     //title: qsTr("Hello World")
-
+    anchors.fill: parent;
     VideoItem{
         anchors.fill: parent;
         surface: id_camera.VideoSurface();
 
     }
+    Row{
+        width: parent.width;
     Button{
-        text : qsTr("clicked");
+        text : qsTr("replay");
+        onClicked: {
+            id_camera.Replay();
+        }
     }
+    Button{
+        text:qsTr("set empty url");
+        onClicked: {
+            id_camera.Reset();
+        }
+    }
+    }
+
 
 //    InputPanel {
 //        id: inputPanel

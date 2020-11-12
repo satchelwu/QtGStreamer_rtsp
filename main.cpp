@@ -29,6 +29,7 @@ int main(int argc, char *argv[])
 
 //    if (engine.rootObjects().isEmpty())
 //        return -1;
+    view.resize(640, 480);
     view.show();
     return app.exec();
 }
