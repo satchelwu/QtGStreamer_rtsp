@@ -25,7 +25,9 @@ int main(int argc, char *argv[])
     QQuickView view;
     view.rootContext()->setContextProperty("id_camera", camera);
     view.setSource(QUrl(QStringLiteral("qrc:/main.qml")));
-    camera->SetRtspAddress("rtsp://localhost:8554/ds-test");
+//    camera->SetRtspAddress("rtsp://localhost:8554/ds-test");
+//    camera->SetRtspAddress("rtsp://admin:scwtjqsj999@192.168.1.64:554/h264/ch1/main/av_stream");
+    camera->SetRtspAddress("rtsp://admin:scwtjqsj999@192.168.1.64:554/Streaming/Channels/101?transportmode=unicast");
 
 //    if (engine.rootObjects().isEmpty())
 //        return -1;

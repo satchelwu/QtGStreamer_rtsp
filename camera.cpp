@@ -7,6 +7,7 @@
 #include <QGst/Message>
 #include "globaldefine.h"
 #include <QGst/Quick/VideoSurface>
+#include <gst/rtsp/gstrtsp.h>
 
 
 Camera::Camera(QObject *parent) : QObject(parent)
@@ -14,12 +15,19 @@ Camera::Camera(QObject *parent) : QObject(parent)
 
     //    m_pipeline = QGst::Pipeline::create();
     //    m_pipeline->setState(QGst::StatePlaying);
-    m_watchStatusTimer.setInterval(20);
-    m_watchStatusTimer.setSingleShot(false);
+    m_watchSourceStatusTimer.setInterval(1000);
+    m_watchSourceStatusTimer.setSingleShot(false);
+    m_watchSourceAsyncStateChangetimer.setInterval(500);
+    m_watchSourceAsyncStateChangetimer.setSingleShot(true);
+    m_resetTimer.setSingleShot(true);
+    m_resetTimer.setInterval(200);
+//    m_reconnectTimer.setInterval(1000);
+//    m_reconnectTimer.setSingleShot(false);
     m_pipeline = QGst::Pipeline::create();
     m_rtspsrc = QGst::ElementFactory::make(GStreamer::Plugin::rtspsrc);
     m_rtspsrc->setProperty(GStreamer::rtspsrc::LATENCY, 10);
     m_rtspsrc->setProperty(GStreamer::rtspsrc::DROP_ON_LATENCY, true);
+    m_rtspsrc->setProperty(GStreamer::rtspsrc::PROTOCOLS, 1);
     m_decodebin = QGst::ElementFactory::make(GStreamer::Plugin::decodebin);
     m_queue = QGst::ElementFactory::make(GStreamer::Plugin::queue);
 #ifdef __aarch64__
@@ -50,6 +58,8 @@ Camera::Camera(QObject *parent) : QObject(parent)
     QGlib::connect(m_rtspsrc, "pad-added", this, &Camera::OnRtspsrcPadAdded);
     QGlib::connect(m_rtspsrc, "pad-removed", this, &Camera::onRtspsrcPadRemoved);
     QGlib::connect(m_rtspsrc, "select-stream", this, &Camera::OnRtspsrcSelectStream);
+    QGlib::connect(m_queue, "underrun", this, &Camera::onQueueUnderRun);
+    QGlib::connect(m_queue, "running", this, &Camera::onQueueRunning);
 #endif
     QGst::BusPtr bus = m_pipeline->bus();
     bus->addSignalWatch();
@@ -57,14 +67,15 @@ Camera::Camera(QObject *parent) : QObject(parent)
 
     QGlib::connect(bus, "message", this, &Camera::OnBusMessage);
     m_pipeline->setState(QGst::StatePlaying);
-    connect(&m_watchStatusTimer, &QTimer::timeout, this, &Camera::OnWatchStatus);
-    m_watchStatusTimer.start();
-
+    connect(&m_watchSourceStatusTimer, &QTimer::timeout, this, &Camera::OnWatchSourceStatus);
+    connect(&m_watchSourceAsyncStateChangetimer, &QTimer::timeout, this, &Camera::OnWatchSourceAsyncStateChange);
+    connect(&m_resetTimer, &QTimer::timeout, this, &Camera::ResetSourceBin);
+    m_watchSourceStatusTimer.start();
 }
 
 Camera::~Camera()
 {
-    m_watchStatusTimer.stop();
+    m_watchSourceStatusTimer.stop();
     QGst::PadPtr queueSinkPad = m_queue->getStaticPad(GStreamer::SINK);
     gst_pad_remove_probe((GstPad*)queueSinkPad, m_queueSinkPadProbeId);
     if(!m_pipeline.isNull())
@@ -80,13 +91,16 @@ Camera::~Camera()
 
 void Camera::SetRtspAddress(const QString& strRtspAddress)
 {
+    m_watchSourceStatusTimer.stop();
+    m_watchSourceAsyncStateChangetimer.stop();
 //    for(int i = 0; i < 2; ++i)
     {
         m_rtspsrc->setState(QGst::StateNull);
         m_rtspsrc->setProperty("location", strRtspAddress);
-        m_rtspsrc->syncStateWithParent();
+//        m_rtspsrc->syncStateWithParent();
         m_lastRtspAddress = strRtspAddress;
     }
+    m_watchSourceStatusTimer.start();
 }
 
 QGst::Quick::VideoSurface* Camera::VideoSurface()
@@ -249,6 +263,35 @@ void Camera::onRtspsrcPadRemoved(const QGst::PadPtr &pad)
     qDebug() << pad->name() <<  "pad removed";
 }
 
+void Camera::onQueueRunning()
+{
+//    if(m_reconnectTimer.isActive())
+//    {
+//        m_reconnectTimer.stop();
+//    }
+//    qDebug() << "running";
+//    bool b = true;
+}
+
+void Camera::onQueueUnderRun()
+{
+//   if(m_pReconnectTimer == nullptr)
+//   {
+//       m_pReconnectTimer = new QTimer();
+//       m_pReconnectTimer->setInterval(1000);
+//       m_pReconnectTimer->setSingleShot(false);
+//       connect(m_pReconnectTimer, &QTimer::timeout, this, &Camera::OnReconnect);
+//       m_pReconnectTimer->start();
+//   }else{
+//        if(!m_pReconnectTimer->isActive())
+//        {
+//            m_pReconnectTimer->start();
+//        }
+//   }
+//    qDebug() << "stopped";
+//    bool b = true;
+}
+
 //void Camera::OnRtspsrcPushBackChannelBuffer(int arg0, const QGst::BufferPtr &buffer)
 //{
 //    bool b = true;
@@ -293,18 +336,104 @@ void Camera::OnDecodebinPadRemoved(const QGst::PadPtr &pad)
 
 }
 
-void Camera::OnWatchStatus()
+void Camera::OnWatchSourceStatus()
 {
     QTime currentTime = QTime::currentTime();
-    int nTimespan = -1;
+    //    if(!m_lastBufferTime.isValid())
+    //    {
+    //        m_lastBufferTime = QTime::currentTime();
+    //    }
+    static QTime lastResetTimeGlobal = QTime::currentTime();
+    double timeDiffMsecSinceLastReset = lastResetTimeGlobal.msecsTo(currentTime);
+    if(!m_lastReconnectTime.isValid())
     {
-        QMutexLocker locker(&m_mutexBuffer);
-        nTimespan = m_lastBufferTime.msecsTo(currentTime);
+        m_lastReconnectTime = QTime::currentTime();
     }
-    if(nTimespan > 0)
+    if(m_bReconfiguring)
     {
-//        qDebug() << "time spane: " <<  nTimespan;
+        qDebug() << "reconfiguring...";
+        int timeSinceLastReconnectSecond  = m_lastReconnectTime.secsTo(currentTime);
+        if(timeSinceLastReconnectSecond >= 10)
+        {
+            if(timeDiffMsecSinceLastReset > 3000)
+            {
+                qDebug() << "reconfigure to reset source bin";
+                lastResetTimeGlobal = currentTime;
+                ResetSourceBin();
+            }
+        }
     }
+    else{
+        qDebug() << "else... ";
+        int nTimeSincelastBufSeconds = 0;
+        {
+            QMutexLocker locker(&m_mutex);
+            if(m_lastBufferTime.isValid())
+            {
+                nTimeSincelastBufSeconds = m_lastBufferTime.secsTo(currentTime);
+            }
+            else{
+                m_lastBufferTime = QTime::currentTime();
+            }
+        }
+        if(m_nRtspReconnectInterval > 0 && nTimeSincelastBufSeconds >= m_nRtspReconnectInterval)
+        {
+            if(timeDiffMsecSinceLastReset > 3000)
+            {
+                lastResetTimeGlobal = currentTime;
+                qDebug() << "no data from source since last " << nTimeSincelastBufSeconds << " seconds";
+                qDebug() << "trying reconnection";
+                ResetSourceBin();
+            }
+
+        }
+    }
+}
+
+bool Camera::OnWatchSourceAsyncStateChange()
+{
+    QGst::State state,pending;
+    QGst::StateChangeReturn stateChangeResult = m_rtspsrc->getState(&state, &pending, 0);
+
+
+    if(QGst::StateChangeAsync == stateChangeResult)
+    {
+        //        return true;
+        qDebug() << "async state";
+        m_watchSourceStatusTimer.start();
+        return true;
+
+    }
+    if( QGst::StateChangeFailure == stateChangeResult)
+    {
+        qDebug() << "failure state";
+        m_bAsnycStateWatchRunning = false;
+        return false;
+    }
+    if(QGst::StatePlaying == state)
+    {
+        qDebug() << "playing state";
+        m_bReconfiguring = false;
+        m_bAsnycStateWatchRunning = false;
+        //        m_outputBin->syncStateWithParent();
+        return false;
+    }
+    m_rtspsrc->setState(QGst::State::StatePlaying);
+    //    m_rtspsrc->syncStateWithParent();
+//    bool bSync = m_outputBin->syncStateWithParent();
+//    if(!bSync)
+//    {
+//        qDebug() << "outputbin sync failed";
+//    }
+    m_watchSourceStatusTimer.start();
+    qDebug() << "set input bin playing state";
+    return true;
+}
+
+void Camera::OnReconnect()
+{
+    m_rtspsrc->setState(QGst::StateNull);
+    m_rtspsrc->setState(QGst::StatePlaying);
 }
 
 
@@ -326,9 +455,11 @@ void Camera::OnBusMessage(const QGst::MessagePtr &message)
 {
     //    QList<params propertyList = message->source()->listProperties();
     //    qDebug() << propertyList;
-//    qDebug() << message->typeName();
-//    qDebug() << message->internalStructure()->toString();
-    return;
+    qDebug() << "*******************************";
+    qDebug() << message->typeName();
+    qDebug() << message->internalStructure()->toString();
+    qDebug() << "*******************************";
+//    return;
     switch (message->type()) {
     case QGst::MessageEos: //End of stream. We reached the end of the file.
         //        stop();
@@ -337,14 +468,24 @@ void Camera::OnBusMessage(const QGst::MessagePtr &message)
             bool b = true;
         }
         break;
-//    case QGst::MessageElement:
+    case QGst::MessageElement:
+        qDebug() << message->typeName();
+        qDebug() << message->internalStructure()->toString();
 
-
-//        break;
+        break;
     case QGst::MessageError: //Some error occurred.
     {
+        QGst::ObjectPtr obj = message->source();
 
-        qCritical() << message.staticCast<QGst::ErrorMessage>()->error();
+        if(obj == m_rtspsrc)
+        {
+            if(!m_bReconfiguring)
+            {
+                m_bReconfiguring = true;
+                m_resetTimer.start();
+            }
+        }
+        qDebug() << message.staticCast<QGst::ErrorMessage>()->error();
 
     }
         break;
@@ -375,10 +516,31 @@ void Camera::OnBusMessage(const QGst::MessagePtr &message)
 
     }
         break;
+    case QGst::MessageProgress:
+        {
+            QGst::StructureConstPtr s = message->internalStructure();
+            if(s->hasField("type") && GstProgressType(s->value("type").toUInt()) == GST_PROGRESS_TYPE_ERROR)
+            {
+                if(s->hasField("code") && s->value("code").toString() == "open")
+                {
+//                    m_reconnectTimer.start();
+                }
+            }
+        }
+        break;
     case QGst::MessageStreamStatus:
         {
         QGst::StreamStatusMessagePtr statusPtr = message.staticCast<QGst::StreamStatusMessage>();
         qDebug() << statusPtr->internalStructure()->toString();
+        QGst::StructureConstPtr s = statusPtr->internalStructure();
+        if(s->hasField("type"))
+        {
+//            if(GstStreamStatusType(s->value("type").toUInt()) == GST_STREAM_STATUS_TYPE_LEAVE)
+//            {
+////                Replay();
+//                m_reconnectTimer.start();
+//            }
+        }
 
     }
          break;
@@ -395,9 +557,62 @@ GstPadProbeReturn Camera::QueueSinkPadProbeFunc(GstPad *pad, GstPadProbeInfo *in
     if(camera)
     {
         {
-            QMutexLocker locker(&camera->m_mutexBuffer);
+            QMutexLocker locker(&camera->m_mutex);
             camera->m_lastBufferTime = QTime::currentTime();
         }
     }
     return GST_PAD_PROBE_OK;
+}
+
+bool Camera::ResetSourceBin()
+{
+    qDebug() << "reseting";
+    {
+        qDebug() << "locking";
+        QMutexLocker locker(&m_mutex);
+        m_lastBufferTime = QTime::currentTime();
+        m_lastReconnectTime = QTime::currentTime();
+        qDebug() << "unlocking";
+    }
+    qDebug() << "before null";
+    QGst::State state, pending;
+    QGst::StateChangeReturn inputStateResult = m_rtspsrc->getState(&state, &pending, 0);
+    qDebug() << inputStateResult;
+    QGst::StateChangeReturn stateChangeResult = m_rtspsrc->setState(QGst::StateNull);
+    qDebug() << "state to null";
+    if(QGst::StateChangeFailure == stateChangeResult)
+    {
+        qDebug() << "can't set source bin to NULL";
+        m_resetTimer.stop();
+        return false;
+    }
+    qDebug() << "resetting source " << m_rtspsrc->name();
+    if(!m_rtspsrc->syncStateWithParent())
+    {
+        qDebug() << "intput bin count't sync state with parent";
+    }
+//    if(!m_outputBin->syncStateWithParent())
+    {
+//        qDebug() << "output bin cound't sync state with parent";
+    }
+
+    stateChangeResult = m_rtspsrc->getState(&state, &pending, 0);
+    qDebug() << stateChangeResult;
+    if(stateChangeResult == QGst::StateChangeAsync || stateChangeResult == QGst::StateChangeNoPreroll)
+    {
+        qDebug() << "async or o preroll";
+        if(!m_bAsnycStateWatchRunning)
+        {
+            m_watchSourceAsyncStateChangetimer.start();
+        }
+        m_bAsnycStateWatchRunning = true;
+        m_bReconfiguring = true;
+    }
+    else if(stateChangeResult == QGst::StateChangeSuccess && state == QGst::StatePlaying)
+    {
+        m_bReconfiguring = false;
+    }
+    qDebug() << "reset done";
+    m_resetTimer.stop();
+    return false;
 }
